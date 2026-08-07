@@ -54,7 +54,15 @@ O pipeline analítico do projeto está estruturado em quatro etapas principais:
 4. **Visualização de Dados e Exportação:**
 * Automação de gráficos e mapas conceituais gerados via `ggplot2` e `quanteda.textplots` em alta resolução (300 DPI — PNG e PDF vetorial).
 
+### Fontes dos Documentos Originais (PDFs)
 
+Os textos brutos disponíveis na pasta `01_data/01_raw_docs/` foram extraídos das publicações oficiais públicas listadas abaixo:
+
+* **13º Plano Quinquenal (2016-2020):** CHINA. Central Committee of the Communist Party of China. The 13th Five-Year Plan for Economic and Social Development of the People’s Republic of China (2016–2020). Translated by Compilation and Translation Bureau, Central Committee of the Communist Party of China. Beijing: National Development and Reform Commission (NDRC), 2016. Disponível em: https://en.ndrc.gov.cn/policies/202105/P020210527785800103339.pdf. Acesso em: 7 ago. 2026.
+
+* **14º Plano Quinquenal (2021-2025):** CHINA. National People’s Congress. Outline of the People's Republic of China 14th Five-Year Plan for National Economic and Social Development and Long-Range Objectives for 2035. Translation by Translator Etcetera Language Group, Inc. Washington, DC: Center for Security and Emerging Technology (CSET), Georgetown University, 13 mar. 2021. Disponível em: https://cset.georgetown.edu/publication/china-14th-five-year-plan/. Fonte original disponível em: http://www.gov.cn/xinwen/2021-03/13/content_5592681.htm. Acesso em: 7 ago. 2026.
+
+* **15º Plano Quinquenal (2026-2030):** CHINA. National People’s Congress. Outline of the 15th Five-Year Plan (2026-2030) for National Economic and Social Development of the People’s Republic of China. Translation by EUCLERA. Klagenfurt: Wirtschaftskammer Österreich (WKO), 2026. Disponível em: https://www.wko.at/ktn/aussenwirtschaft/euclera-translation-15th-five-year-plan-2026-2030-.pdf. Acesso em: 7 ago. 2026.
 
 ---
 
@@ -72,7 +80,7 @@ O pipeline analítico do projeto está estruturado em quatro etapas principais:
 │   ├── 01_extracao_e_parsing.R                        # Leitura e parsing inicial dos documentos brutos
 │   ├── 01b_validacao_corpus.R                         # Testes de integridade e validação do corpus
 │   ├── 02_tokenizacao_dfm_dicionario.R                # Tokenização, matriz DFM e aplicação do dicionário
-│   ├── 03_visualizacao_graficos.R                      # Visualização Lexicográfica, geração de gráficos e figuras e análise de Keyness
+│   ├── 03_visualizacao_graficos.R                      # Visualização Lexicográfica e geração de gráficos e figuras
 │   ├── 04_kwic_e_candidatos_cpo.R                      # Análise KWIC e seleção de candidatos a CPOs
 │   ├── 05_matriz_cpo_exportacao.R                      # Construção e exportação das matrizes de CPOs
 │   └── artigo_planos_quinquenais_SCRIPTS_COMPLETOS.R    # Script unificado contendo o pipeline completo
