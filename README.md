@@ -62,7 +62,7 @@ O pipeline analítico do projeto está estruturado em quatro etapas principais:
 
 ```text
 ├── 01_data/
-│   ├── 01_raw_docs/                 # Textos brutos dos Planos Quinquenais
+│   ├── 01_extracao_e_parsing.R      # Processamento dos PDF's - Planos Quinquenais
 │   ├── 03_clean_csv/                # Tabelas processadas de densidade e proporção
 │   └── 04_processed_corpus/         # Document-Feature Matrix (DFM) e Tokens (.rds)
 │
