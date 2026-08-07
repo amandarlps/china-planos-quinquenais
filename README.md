@@ -138,7 +138,7 @@ Para reproduzir integralmente os resultados e gráficos, execute os scripts em `
 
 ---
 
-## 📝 Autoria e Citação
+## Autoria e Citação
 
 * **Autor:** Amanda Ribeiro Lopes
 * **Afiliação:** Universidade do Estado do Rio de Janeiro (UERJ)
