@@ -1,0 +1,1400 @@
+# ==============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica Chinesa do 13º ao 15º 
+# Plano Quinquenal (2026-2030)
+# AUTOR: Amanda Ribeiro Lopes
+# PIPELINE MESTRE
+# ==============================================================================
+# NOTA DE DESENVOLVIMENTO:
+# Este script foi refatorado e otimizado com o auxílio de IA (Gemini). O modelo 
+# foi utilizado exclusivamente como ferramenta auxiliar de otimização e sintaxe 
+# de código sob supervisão, instrução e testes contínuos da autora.
+
+# Carregamento de pacotes
+library(tidyverse)
+library(readxl)
+library(showtext)
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 00_setup_e_diretorios.R
+# FUNÇÃO: Instalação, Carregamento de Pacotes e Infraestrutura de Pastas
+# =============================================================================
+
+options(scipen = 999, stringsAsFactors = FALSE)
+
+# Lista completa de dependências do projeto
+pacotes <- c(
+  "pdftools", "stringr", "dplyr", "tidyr", "purrr", "readr",
+  "quanteda", "quanteda.textstats", "quanteda.textplots",
+  "stopwords", "ggplot2", "scales", "gridExtra", "ggrepel", "tidytext"
+)
+
+# Carregamento silencioso das bibliotecas
+suppressPackageStartupMessages(lapply(pacotes, library, character.only = TRUE))
+
+# Infraestrutura Padronizada de Pastas do Projeto
+diretorios_projeto <- c(
+  "01_data/01_raw_pdfs",
+  "01_data/02_intermediate",
+  "01_data/03_clean_csv",
+  "01_data/04_processed_corpus",
+  "02_scripts",
+  "03_outputs/graficos",
+  "03_outputs/tabelas",
+  "03_outputs/relatorios",
+  "04_apendice"
+)
+
+purrr::walk(diretorios_projeto, ~ dir.create(.x, showWarnings = FALSE, recursive = TRUE))
+
+message("--> [SCRIPT 00] Infraestrutura de diretórios e pacotes configurada com sucesso!")
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 01_extracao_e_parsing.R
+# FUNÇÃO: Processamento de PDF, Parser Hierárquico Universal e Construção do Corpus
+# =============================================================================
+
+if (file.exists("00_setup_e_diretorios.R")) {
+  source("00_setup_e_diretorios.R")
+} else if (file.exists("02_scripts/00_setup_e_diretorios.R")) {
+  source("02_scripts/00_setup_e_diretorios.R")
+}
+
+suppressPackageStartupMessages({
+  library(pdftools)
+  library(stringr)
+  library(dplyr)
+  library(readr)
+  library(quanteda)
+})
+
+message("--> [SCRIPT 01] Executando Extração Avançada e Parsing Hierárquico das Seções...")
+
+NUMS_EXTENSO <- "One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve|Thirteen|Fourteen|Fifteen|Sixteen|Seventeen|Eighteen|Nineteen|Twenty"
+
+# 1. Extração Preservando Páginas
+extrair_pdf_estruturado <- function(caminho_pdf, plano_id) {
+  if (!file.exists(caminho_pdf)) {
+    stop(paste("Arquivo não encontrado:", caminho_pdf))
+  }
+  
+  message(paste("--> Lendo e extraindo páginas de:", plano_id))
+  paginas_raw <- pdf_text(caminho_pdf)
+  
+  tibble(
+    plano = plano_id,
+    pagina = seq_along(paginas_raw),
+    texto_bruto = paginas_raw
+  )
+}
+
+# 2. Filtro Anti-Sumário (TOC) e Limpeza Textual
+limpar_e_filtrar_frontmatter <- function(df_paginas, padroes_cabecalho = NULL) {
+  regex_marcador_sumario <- sprintf("(?:CHAPTER|PART|ARTICLE)\\s+(?:[0-9IVXLCDM]+|[0-9]+|%s)", NUMS_EXTENSO)
+  
+  df_paginas %>%
+    mutate(
+      contagem_titulos = str_count(texto_bruto, regex(regex_marcador_sumario, ignore_case = TRUE))
+    ) %>%
+    filter(contagem_titulos < 3) %>%
+    select(-contagem_titulos) %>%
+    mutate(
+      texto_limpo = texto_bruto,
+      texto_limpo = str_replace_all(texto_limpo, "\r\n", "\n"),
+      texto_limpo = str_replace_all(texto_limpo, "([a-zA-Z])-\\s\n\\s([a-zA-Z])", "\\1\\2"),
+      texto_limpo = str_replace_all(texto_limpo, "\n\\s*\\d+\\s*\n", "\n"),
+      texto_limpo = str_replace_all(texto_limpo, "\n\\s*Page\\s+\\d+\\s*\n", "\n")
+    ) %>%
+    {
+      df_temp <- .
+      if (!is.null(padroes_cabecalho)) {
+        for (p_pat in padroes_cabecalho) {
+          df_temp$texto_limpo <- str_replace_all(df_temp$texto_limpo, regex(p_pat, ignore_case = TRUE), " ")
+        }
+      }
+      df_temp
+    } %>%
+    mutate(
+      texto_limpo = str_replace_all(texto_limpo, "[\t ]+", " "),
+      texto_limpo = str_replace_all(texto_limpo, "\n{3,}", "\n\n"),
+      texto_limpo = str_trim(texto_limpo)
+    )
+}
+
+# 3. Parser Hierárquico com Herança de Páginas
+segmentar_por_estrutura <- function(df_limpo, min_palavras = 50) {
+  texto_consolidado <- df_limpo %>%
+    mutate(texto_pag = paste0("\n[PAGE_", pagina, "]\n", texto_limpo)) %>%
+    pull(texto_pag) %>%
+    paste(collapse = "\n")
+  
+  padrao_secao <- sprintf("(?i)(?=\n\\s*(?:CHAPTER|PART|ARTICLE)\\s+(?:[0-9IVXLCDM]+|[0-9]+|%s)\\b)", NUMS_EXTENSO)
+  blocos <- str_split(texto_consolidado, padrao_secao)[[1]]
+  
+  registros <- list()
+  cap_num <- 0
+  ultima_pagina_vista <- 1
+  
+  for (i in seq_along(blocos)) {
+    bloco_txt <- str_trim(blocos[i])
+    
+    # Extração de páginas usando Raw String r"(...)" para evitar erros de barra invertida
+    pags_no_bloco <- as.numeric(str_extract_all(bloco_txt, r"(?<=\[PAGE_)\d+(?=\])")[[1]])
+    
+    if (length(pags_no_bloco) > 0) {
+      pag_ini_bloco <- pags_no_bloco[1]
+      pag_fim_bloco <- pags_no_bloco[length(pags_no_bloco)]
+      ultima_pagina_vista <- pag_fim_bloco
+    } else {
+      pag_ini_bloco <- ultima_pagina_vista
+      pag_fim_bloco <- ultima_pagina_vista
+    }
+    
+    # Remoção das tags de página
+    bloco_sem_tags <- str_replace_all(bloco_txt, r"(\[PAGE_\d+\])", " ")
+    bloco_limpo_espacos <- str_replace_all(bloco_sem_tags, "\\s+", " ") %>% str_trim()
+    palavras_bloco <- str_count(bloco_limpo_espacos, "\\w+")
+    
+    if (palavras_bloco < min_palavras) next
+    
+    linhas <- str_split(str_trim(bloco_sem_tags), "\n")[[1]]
+    header_linha <- str_trim(linhas[1])
+    cap_num <- cap_num + 1
+    
+    registros[[length(registros) + 1]] <- tibble(
+      capitulo_index = cap_num,
+      capitulo_header = str_sub(header_linha, 1, 140),
+      pagina_inicio = pag_ini_bloco,
+      pagina_fim = pag_fim_bloco,
+      texto_secao = bloco_limpo_espacos,
+      n_palavras = palavras_bloco
+    )
+  }
+  bind_rows(registros)
+}
+
+# 4. Execução do Pipeline nos Arquivos Mapeados
+arquivos_pq <- list(
+  PQ13 = list(nomes_possiveis = c("13PQ_en.pdf"), periodo = "2016-2020", tipo = "Texto Integral"),
+  PQ14 = list(nomes_possiveis = c("14PQ_en.pdf"), periodo = "2021-2025", tipo = "Texto Integral"),
+  PQ15 = list(nomes_possiveis = c("15PQ_en.pdf"), periodo = "2026-2030", tipo = "Outline/Proposta")
+)
+
+padroes_cabecalho_pq15 <- c("Outline of the 15th Five-Year Plan", "Xinhua News Agency")
+base_processada_lista <- list()
+
+for (pq_key in names(arquivos_pq)) {
+  info <- arquivos_pq[[pq_key]]
+  caminho_encontrado <- NULL
+  
+  for (nome in info$nomes_possiveis) {
+    p_sub <- file.path("01_data/01_raw_pdfs", nome)
+    p_root <- nome
+    if (file.exists(p_sub)) { caminho_encontrado <- p_sub; break }
+    if (file.exists(p_root)) { caminho_encontrado <- p_root; break }
+  }
+  
+  if (!is.null(caminho_encontrado)) {
+    message(paste0("--> Processando [", pq_key, "] a partir de: ", caminho_encontrado))
+    raw_df <- extrair_pdf_estruturado(caminho_encontrado, pq_key)
+    write_csv(raw_df, paste0("01_data/02_intermediate/", pq_key, "_paginas_brutas.csv"))
+    
+    pats <- if (pq_key == "PQ15") padroes_cabecalho_pq15 else NULL
+    clean_df <- limpar_e_filtrar_frontmatter(raw_df, padroes_cabecalho = pats)
+    
+    parsed_df <- segmentar_por_estrutura(clean_df, min_palavras = 50) %>%
+      mutate(plano = pq_key, periodo = info$periodo, tipo_doc = info$tipo)
+    
+    base_processada_lista[[pq_key]] <- parsed_df
+  } else {
+    warning(paste("[ATENÇÃO] PDF não localizado para:", pq_key))
+  }
+}
+
+if (length(base_processada_lista) == 0) {
+  stop("\n[ERRO CRÍTICO]: Nenhum PDF foi localizado em '01_data/01_raw_pdfs/'.")
+}
+
+tabela_master_secoes <- bind_rows(base_processada_lista) %>%
+  mutate(doc_id = sprintf("%s_Cap_%02d", plano, capitulo_index)) %>%
+  select(doc_id, plano, periodo, tipo_doc, capitulo_index, capitulo_header, pagina_inicio, pagina_fim, n_palavras, texto_secao)
+
+write_csv(tabela_master_secoes, "01_data/03_clean_csv/planos_quinquenais_secoes_limpas.csv")
+
+# 5. Montagem do Corpus no Quanteda com Metadados
+corpus_pq_estruturado <- corpus(
+  tabela_master_secoes,
+  docid_field = "doc_id",
+  text_field = "texto_secao"
+)
+
+docvars(corpus_pq_estruturado, "plano")               <- factor(tabela_master_secoes$plano, levels = c("PQ13", "PQ14", "PQ15"))
+docvars(corpus_pq_estruturado, "periodo")             <- factor(tabela_master_secoes$periodo)
+docvars(corpus_pq_estruturado, "capitulo_num")        <- as.integer(tabela_master_secoes$capitulo_index)
+docvars(corpus_pq_estruturado, "capitulo_nome")       <- tabela_master_secoes$capitulo_header
+docvars(corpus_pq_estruturado, "pagina_inicio")       <- as.integer(tabela_master_secoes$pagina_inicio)
+docvars(corpus_pq_estruturado, "pagina_fim")          <- as.integer(tabela_master_secoes$pagina_fim)
+docvars(corpus_pq_estruturado, "data_processamento")  <- as.character(Sys.Date())
+
+saveRDS(corpus_pq_estruturado, "01_data/04_processed_corpus/corpus_pq_estruturado.rds")
+message("--> [SCRIPT 01] Corpus salvo com sucesso em '01_data/04_processed_corpus/corpus_pq_estruturado.rds'!")
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 01b_validacao_corpus.R
+# FUNÇÃO: Auditoria Diagnóstica, Volumetria e Integridade Estrutural
+# =============================================================================
+
+if (file.exists("00_setup_e_diretorios.R")) {
+  source("00_setup_e_diretorios.R")
+} else if (file.exists("02_scripts/00_setup_e_diretorios.R")) {
+  source("02_scripts/00_setup_e_diretorios.R")
+}
+
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(readr)
+  library(quanteda)
+})
+
+message("--> [SCRIPT 01b] Executando Diagnóstico de Integridade do Corpus...")
+
+caminho_csv <- "01_data/03_clean_csv/planos_quinquenais_secoes_limpas.csv"
+caminho_corpus <- "01_data/04_processed_corpus/corpus_pq_estruturado.rds"
+
+if (!file.exists(caminho_csv) || !file.exists(caminho_corpus)) {
+  stop("[ERRO CRÍTICO]: Arquivos para validação não foram encontrados.")
+}
+
+tabela_master <- read_csv(caminho_csv, show_col_types = FALSE)
+corpus_pq <- readRDS(caminho_corpus)
+
+message("\n=== 1. DISTRIBUIÇÃO DE DOCUMENTOS E PALAVRAS POR PLANO ===")
+print(
+  tabela_master %>%
+    group_by(plano, periodo) %>%
+    summarise(
+      total_secoes = n(),
+      total_palavras = sum(n_palavras),
+      mediana_palavras = median(n_palavras),
+      .groups = "drop"
+    )
+)
+
+message("\n=== 2. INSPEÇÃO DE SEÇÕES ANÔMALAS (< 100 PALAVRAS) ===")
+secoes_curtas <- tabela_master %>% filter(n_palavras < 100)
+if (nrow(secoes_curtas) > 0) {
+  print(secoes_curtas %>% select(doc_id, plano, capitulo_header, n_palavras))
+} else {
+  message("[OK] Nenhuma seção anômala extremamente curta foi encontrada.")
+}
+
+message("\n=== 3. AUDITORIA DE TAGS RESIDUAIS DE PÁGINA ===")
+tags_residuais <- sum(stringr::str_detect(tabela_master$texto_secao, r"(\[PAGE_\d+\])"))
+if (tags_residuais == 0) {
+  message("[OK] Nenhuma tag [PAGE_X] residual detectada.")
+} else {
+  warning(paste("[ATENÇÃO]", tags_residuais, "documentos contêm tags residuais!"))
+}
+
+message("\n=== 4. INTEGRIDADE DOS METADADOS (DOCVARS) ===")
+df_vars <- docvars(corpus_pq)
+nas_detectados <- sum(is.na(df_vars))
+if (nas_detectados == 0) {
+  message("[OK] Todos os metadados (docvars) do Quanteda estão preenchidos sem NAs.\n")
+} else {
+  warning(paste("[ATENÇÃO] Encontrados", nas_detectados, "valores NA nos metadados."))
+}
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 02_tokenizacao_dfm_dicionario.R
+# FUNÇÃO: Tokenização, MWEs, DFM e Cálculo Correto de Densidade do Dicionário
+# =============================================================================
+
+if (file.exists("00_setup_e_diretorios.R")) {
+  source("00_setup_e_diretorios.R")
+} else if (file.exists("02_scripts/00_setup_e_diretorios.R")) {
+  source("02_scripts/00_setup_e_diretorios.R")
+}
+
+suppressPackageStartupMessages({
+  library(quanteda)
+  library(tidyverse)
+})
+
+message("--> [SCRIPT 02] Iniciando Processamento Lexicográfico e Dicionário Teórico...")
+
+# 1. CARREGAMENTO DO CORPUS
+caminho_corpus <- "01_data/04_processed_corpus/corpus_pq_estruturado.rds"
+if (!file.exists(caminho_corpus)) {
+  stop("[ERRO CRÍTICO]: O arquivo 'corpus_pq_estruturado.rds' não foi localizado.")
+}
+corpus_pq <- readRDS(caminho_corpus)
+
+# 2. TOKENIZAÇÃO E MULTI-WORD EXPRESSIONS (MWEs)
+toks_raw <- tokens(
+  corpus_pq,
+  remove_punct = TRUE,
+  remove_symbols = TRUE,
+  remove_numbers = TRUE,
+  remove_url = TRUE,
+  split_hyphens = FALSE
+) %>% tokens_tolower()
+
+mwe_china_strategy <- c(
+  # 1. Modernização e Inovação Tecnológica
+  "high-quality development", "higher-quality development", "new quality productive forces",
+  "innovation-driven development", "technological self-reliance and self-strengthening",
+  "technological sovereignty", "technological autonomy", "science and technology",
+  "st innovation", "s and t innovation", "modern industrial system", "manufacturing powerhouse",
+  "digital economy", "ai plus", "digital-intelligent", "integrated circuits",
+  "upgrading of the industrial chain", "total factor productivity", "supply-side structural reform",
+  "real economy", "new development stage", "basic research", "core technologies in key fields",
+  "industrial chain resilience", "smart manufacturing", "strategic emerging industries",
+  "future industries", "data elements", "commercial spaceflight", "low-altitude economy",
+  "quantum information", "biomanufacturing", "embodied ai", "frontier technologies",
+  "digital transformation", "science and technology self-reliance",
+  
+  # 2. Concepção Holística de Segurança Nacional
+  "comprehensive national security concept", "holistic view of state security",
+  "overall national security concept", "overall national security", "political security",
+  "regime security", "coordinate development and security", "security and development",
+  "economic security", "food and energy security", "food security", "energy security",
+  "civil-military synergy", "civil-military integration", "civil-military fusion",
+  "global security initiative", "bottom-line thinking", "national security system",
+  "national security governance", "security governance system", "strategic stability",
+  "national defense and armed forces", "cybersecurity", "information security",
+  "data security", "financial security", "biosafety", "biosecurity", "nuclear security",
+  "outer space security", "deep sea security", "risk prevention and control",
+  "risk defusion", "emergency management system", "armed forces modernization",
+  
+  # 3. Liderança Estratégica e Capacidade
+  "party leadership", "ccp leadership", "communist party", "centralized and unified leadership",
+  "political leadership efficiency", "xi jinping thought", "socialism with chinese characteristics for a new era",
+  "two establishments", "two safeguards", "social stability", "party discipline", "party building",
+  "governance capacity", "modernization of governance capacity", "state-owned enterprises",
+  "central committee", "targeted poverty reduction", "full and rigorous party self-governance",
+  "comprehensive strict party governance", "self-reform of the party", "political ecosystem",
+  "intra-party democracy", "socialist rule of law", "law-based governance", "rule of law",
+  "anti-corruption", "modernization of state governance",
+  
+  # 4. Governança Global e Integração
+  "community with a shared future for mankind", "community of shared future", "common destiny",
+  "global development initiative", "global civilization initiative", "belt and road initiative",
+  "high-quality joint construction of the belt and road", "major-country diplomacy",
+  "major power with chinese characteristics", "global south", "partnership network",
+  "high-standard opening up", "institutional opening up", "dual circulation",
+  "new development pattern", "great changes unseen in a century", "win-win cooperation",
+  "peaceful coexistence", "peaceful development", "global governance system",
+  "true multilateralism", "south-south cooperation", "free trade zones", "high-standard free trade",
+  
+  # 5. Civilização Ecológica e Sustentabilidade
+  "ecological civilization", "green development", "carbon neutrality", "carbon peaking",
+  "beautiful china", "lucid waters and lush mountains", "low-carbon transition",
+  "clean energy", "non-fossil energy", "sustainable development", "harmony between man and nature",
+  "harmony between humanity and nature", "ecological environment", "environmental protection",
+  "environmental governance", "pollution control", "dual carbon goals", "green and low-carbon development",
+  "green transformation", "ecological protection redline", "biodiversity conservation",
+  "circular economy", "green finance", "ecological restoration",
+  
+  # 6. Fins Estruturais e Objetivos Nacionais
+  "chinese path to modernization", "chinese style modernization", "chinese-style modernization",
+  "socialist modernization", "national rejuvenation", "rejuvenation of the chinese nation",
+  "great rejuvenation of the chinese nation", "chinese dream", "first centenary goal",
+  "second centenary goal", "two centenaries", "great modern socialist country",
+  "modern socialist country", "modern socialist powerhouse", "moderately prosperous society in all respects",
+  "moderately prosperous society", "xiaokang society", "common prosperity",
+  "whole-process people democracy", "whole-process peoples democracy",
+  "standing tall among the nations of the world", "standing tall among the nations",
+  "people-centered development", "people-centered philosophy", "material and cultural-ethical advancement",
+  "cultural confidence", "two-step strategic plan", "modernization of a huge population"
+)
+
+toks_compounds <- tokens_compound(toks_raw, pattern = phrase(mwe_china_strategy), concatenator = "_")
+
+# 3. FILTRAGEM DE STOPWORDS E RUÍDOS INSTITUCIONAIS
+lista_stopwords_en <- if (requireNamespace("stopwords", quietly = TRUE)) {
+  stopwords::stopwords("en")
+} else {
+  c("a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", "can", "did", "do", "does", "doing", "down", "during", "each", "few", "for", "from", "further", "had", "has", "have", "having", "he", "her", "here", "hers", "herself", "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its", "itself", "just", "me", "more", "most", "my", "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "our", "ours", "ourselves", "out", "over", "own", "same", "she", "should", "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves", "then", "there", "these", "they", "this", "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "were", "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "you", "your", "yours")
+}
+
+stopwords_dominio <- c(
+  lista_stopwords_en,
+  "chapter", "part", "article", "section", "table", "box", "figure", "note",
+  "th", "st", "nd", "rd", "china", "chinese", "plan", "year", "five", "five-year",
+  "xinhua", "news", "agency", "cset", "translation", "editor", "translator",
+  "source", "http", "view", "paragraph", "annex", "appendix", "index", "column",
+  "updated", "relevant", "departments", "sectors", "etc", "various", "general"
+)
+
+toks_clean <- tokens_select(toks_compounds, pattern = stopwords_dominio, selection = "remove", padding = FALSE)
+
+saveRDS(toks_clean, "01_data/04_processed_corpus/tokens_limpos.rds")
+
+# 4. CONSTRUÇÃO DA DFM
+dfm_raw <- dfm(toks_clean)
+dfm_tfidf <- dfm_tfidf(dfm_raw)
+
+saveRDS(dfm_raw, "01_data/04_processed_corpus/dfm_bruta.rds")
+saveRDS(dfm_tfidf, "01_data/04_processed_corpus/dfm_tfidf.rds")
+
+# 5. DICIONÁRIO TEÓRICO EXPANDIDO
+dicionario_racionalidade <- dictionary(list(
+  Modernizacao_e_Inovacao_Tecnologica = c(
+    "high-quality_development", "higher-quality_development", "new_quality_productive_forces",
+    "innovation-driven_development", "technological_self-reliance_and_self-strengthening",
+    "technological_sovereignty", "technological_autonomy", "science_and_technology",
+    "st_innovation", "s_and_t_innovation", "modern_industrial_system", "digital_economy",
+    "total_factor_productivity", "real_economy", "manufacturing_powerhouse", "ai_plus",
+    "digital-intelligent", "integrated_circuits", "semicond*", "quantum*", "new_development_stage",
+    "upgrading_of_the_industrial_chain", "supply-side_structural_reform", "basic_research",
+    "core_technologies_in_key_fields", "industrial_chain_resilience", "smart_manufacturing",
+    "strategic_emerging_industries", "future_industries", "data_elements", "commercial_spaceflight",
+    "low-altitude_economy", "quantum_information", "biomanufacturing", "embodied_ai",
+    "frontier_technologies", "digital_transformation", "science_and_technology_self-reliance"
+  ),
+  Concepcao_Holistica_de_Seguranca_Nacional = c(
+    "comprehensive_national_security_concept", "holistic_view_of_state_security",
+    "overall_national_security_concept", "overall_national_security", "political_security",
+    "regime_security", "national_security", "security_and_development",
+    "coordinate_development_and_security", "national_security_system",
+    "national_security_governance", "security_governance_system", "economic_security",
+    "food_and_energy_security", "food_security", "energy_security", "civil-military_synergy",
+    "civil-military_integration", "civil-military_fusion", "global_security_initiative",
+    "gsi", "dual-use", "risk_prevention", "bottom-line_thinking",
+    "national_defense_and_armed_forces", "strategic_stability", "cybersecurity",
+    "information_security", "data_security", "financial_security", "biosafety",
+    "biosecurity", "nuclear_security", "outer_space_security", "deep_sea_security",
+    "risk_prevention_and_control", "risk_defusion", "emergency_management_system",
+    "armed_forces_modernization"
+  ),
+  Lideranca_Estrategica_e_Capacidade = c(
+    "party_leadership", "ccp_leadership", "communist_party", "centralized_and_unified_leadership",
+    "political_leadership_efficiency", "xi_jinping_thought*",
+    "socialism_with_chinese_characteristics_for_a_new_era", "two_establishments",
+    "two_safeguards", "party_discipline", "party_building", "targeted_poverty_reduction",
+    "state-owned_enterprises", "central_committee", "governance_capacity",
+    "modernization_of_governance_capacity", "social_stability",
+    "full_and_rigorous_party_self-governance", "comprehensive_strict_party_governance",
+    "self-reform_of_the_party", "political_ecosystem", "intra-party_democracy",
+    "socialist_rule_of_law", "law-based_governance", "rule_of_law", "anti-corruption",
+    "modernization_of_state_governance"
+  ),
+  Governanca_Global_e_Integracao = c(
+    "community_with_a_shared_future_for_mankind", "community_of_shared_future", "common_destiny",
+    "global_development_initiative", "gdi", "global_civilization_initiative", "gci",
+    "belt_and_road_initiative", "high-quality_joint_construction_of_the_belt_and_road",
+    "major-country_diplomacy", "major_power_with_chinese_characteristics",
+    "great_changes_unseen_in_a_century", "high-standard_opening_up", "institutional_opening_up",
+    "dual_circulation", "new_development_pattern", "peaceful_development", "global_south",
+    "partnership_network", "win-win_cooperation", "peaceful_coexistence", "global_governance",
+    "global_governance_system", "multilateral*", "true_multilateralism", "south-south_cooperation",
+    "free_trade_zones", "high-standard_free_trade"
+  ),
+  Civilizacao_Ecologica_e_Sustentabilidade = c(
+    "ecological_civilization", "green_development", "carbon_neutrality", "carbon_peaking",
+    "beautiful_china", "lucid_waters_and_lush_mountains", "low-carbon_transition",
+    "clean_energy", "non-fossil_energy", "sustainable_development", "harmony_between_man_and_nature",
+    "harmony_between_humanity_and_nature", "ecological_environment", "environmental_protection",
+    "environmental_governance", "pollution_control", "pollution", "emission*", "decarbon*",
+    "dual_carbon_goals", "green_and_low-carbon_development", "green_transformation",
+    "ecological_protection_redline", "biodiversity_conservation", "circular_economy",
+    "green_finance", "ecological_restoration"
+  ),
+  Fins_Estruturais_e_Objetivos_Nacionais = c(
+    "national_rejuvenation", "rejuvenation_of_the_chinese_nation",
+    "great_rejuvenation_of_the_chinese_nation", "chinese_dream", "chinese_path_to_modernization",
+    "chinese_style_modernization", "chinese-style_modernization", "socialist_modernization",
+    "first_centenary_goal", "second_centenary_goal", "two_centenaries",
+    "great_modern_socialist_country", "modern_socialist_country", "modern_socialist_powerhouse",
+    "moderately_prosperous_society", "moderately_prosperous_society_in_all_respects",
+    "xiaokang_society", "common_prosperity", "whole-process_people_democracy",
+    "whole-process_peoples_democracy", "standing_tall_among_the_nations",
+    "standing_tall_among_the_nations_of_the_world", "people-centered_development",
+    "people-centered_philosophy", "material_and_cultural-ethical_advancement",
+    "cultural_confidence", "two-step_strategic_plan", "modernization_of_a_huge_population"
+  )
+))
+
+saveRDS(dicionario_racionalidade, "01_data/04_processed_corpus/dicionario_racionalidade.rds")
+
+# 6. EXTRAÇÃO EXPLÍCITA DO VETOR DO PLANO E AGRUPAMENTO SEGURO
+if ("plano" %in% names(docvars(dfm_raw)) && length(docvars(dfm_raw, "plano")) == ndoc(dfm_raw)) {
+  vetor_plano <- as.character(docvars(dfm_raw, "plano"))
+} else {
+  vetor_plano <- stringr::str_extract(docnames(dfm_raw), "PQ\\d+")
+}
+
+if (any(is.na(vetor_plano))) {
+  vetor_plano[is.na(vetor_plano)] <- "PQ_Desconhecido"
+}
+
+# Aplicação do Dicionário
+dfm_dict <- dfm_lookup(dfm_raw, dictionary = dicionario_racionalidade)
+
+# Agrupamento explícito via vetor indexado
+dfm_dict_plan <- dfm_group(dfm_dict, groups = vetor_plano)
+dfm_raw_plan <- dfm_group(dfm_raw, groups = vetor_plano)
+
+# Conversão segura independentemente da versão do quanteda
+df_counts_plano <- convert(dfm_dict_plan, to = "data.frame", docid_field = "plano")
+if (names(df_counts_plano)[1] != "plano") {
+  names(df_counts_plano)[1] <- "plano"
+}
+
+# Total de termos reais por plano na DFM limpa
+tokens_totais_plano <- tibble(
+  plano = docnames(dfm_raw_plan),
+  total_tokens = as.numeric(rowSums(dfm_raw_plan))
+)
+
+categorias_dict <- names(dicionario_racionalidade)
+
+# Cálculo de Densidade Discursiva Real (% em relação ao total de palavras do Plano)
+resumo_dicionario_plano <- df_counts_plano %>%
+  left_join(tokens_totais_plano, by = "plano") %>%
+  mutate(across(all_of(categorias_dict), ~ (.x / total_tokens) * 100)) %>%
+  select(-total_tokens)
+
+# Cálculo de Composição Relativa do Dicionário (% em relação ao total de hits do dicionário)
+resumo_dicionario_composicao <- df_counts_plano %>%
+  mutate(total_dict_hits = rowSums(pick(all_of(categorias_dict)))) %>%
+  mutate(across(all_of(categorias_dict), ~ ifelse(total_dict_hits > 0, (.x / total_dict_hits) * 100, 0))) %>%
+  select(-total_dict_hits)
+
+# 7. EXPORTAÇÃO DOS DADOS CORRIGIDOS
+dir.create("01_data/03_clean_csv", recursive = TRUE, showWarnings = FALSE)
+
+df_export_dict <- convert(dfm_dict, to = "data.frame", docid_field = "doc_id")
+write_csv(df_export_dict, "01_data/03_clean_csv/frequencias_dimensoes_dicionario.csv")
+write_csv(resumo_dicionario_plano, "01_data/03_clean_csv/dicionario_resumo_por_plano.csv")
+write_csv(resumo_dicionario_composicao, "01_data/03_clean_csv/dicionario_composicao_relativa_por_plano.csv")
+
+message("\n=================================================================")
+message(" SCRIPT 02 EXECUTADO E CORRIGIDO COM SUCESSO! ")
+message("=================================================================")
+print(resumo_dicionario_plano %>% mutate(across(where(is.numeric), ~ round(.x, 3))))
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 03_visualizacao_graficos.R
+# FUNÇÃO: Visualização Lexicográfica, Trajetórias Longitudinais, Matriz Dialética,
+#         Análise de Keyness, MWEs, Redes de Co-ocorrência e Process Tracing (300 DPI)
+# =============================================================================
+
+if (file.exists("00_setup_e_diretorios.R")) {
+  source("00_setup_e_diretorios.R")
+} else if (file.exists("02_scripts/00_setup_e_diretorios.R")) {
+  source("02_scripts/00_setup_e_diretorios.R")
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(quanteda)
+  library(quanteda.textplots)
+  library(quanteda.textstats)
+  library(ggrepel)
+  library(scales)
+  library(tidytext)
+})
+
+message("--> [SCRIPT 03] Iniciando Módulo de Visualização e Process Tracing...")
+
+dir_figuras <- "03_outputs/graficos"
+dir_tabelas <- "03_outputs/tabelas"
+
+if (!dir.exists(dir_figuras)) dir.create(dir_figuras, recursive = TRUE, showWarnings = FALSE)
+if (!dir.exists(dir_tabelas)) dir.create(dir_tabelas, recursive = TRUE, showWarnings = FALSE)
+
+caminho_resumo  <- "01_data/03_clean_csv/dicionario_resumo_por_plano.csv"
+caminho_comp    <- "01_data/03_clean_csv/dicionario_composicao_relativa_por_plano.csv"
+caminho_dfm_raw <- "01_data/04_processed_corpus/dfm_bruta.rds"
+caminho_toks    <- "01_data/04_processed_corpus/tokens_limpos.rds"
+
+if (!file.exists(caminho_resumo) || !file.exists(caminho_dfm_raw)) {
+  stop("[ERRO CRÍTICO]: Arquivos de dados corrigidos necessários não encontrados.")
+}
+
+df_resumo  <- read_csv(caminho_resumo, show_col_types = FALSE)
+df_comp    <- if (file.exists(caminho_comp)) read_csv(caminho_comp, show_col_types = FALSE) else df_resumo
+dfm_raw    <- readRDS(caminho_dfm_raw)
+toks_clean <- if (file.exists(caminho_toks)) readRDS(caminho_toks) else NULL
+
+if (!"plano" %in% names(docvars(dfm_raw))) {
+  docvars(dfm_raw, "plano") <- stringr::str_extract(docnames(dfm_raw), "PQ\\d+")
+}
+
+tema_academico <- function() {
+  theme_minimal(base_size = 11) +
+    theme(
+      text = element_text(family = "sans", color = "#222222"),
+      plot.title = element_text(face = "bold", size = 12, margin = margin(b = 6)),
+      plot.subtitle = element_text(size = 9, color = "#555555", margin = margin(b = 10)),
+      plot.caption = element_text(size = 8, color = "#777777", margin = margin(t = 10)),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 8.5),
+      strip.text = element_text(face = "bold", size = 9.5)
+    )
+}
+
+# -----------------------------------------------------------------------------
+# 1. TABELA DE FREQUÊNCIA E PROCESS TRACING
+# -----------------------------------------------------------------------------
+vetor_planos <- docvars(dfm_raw, "plano")
+
+freq_por_plano <- textstat_frequency(dfm_raw, groups = vetor_planos) %>%
+  as_tibble() %>%
+  rename(plano = group, termo = feature, frequencia_absoluta = frequency) %>%
+  group_by(plano) %>%
+  mutate(
+    total_termos_plano = sum(frequencia_absoluta),
+    proporcao_pct = (frequencia_absoluta / total_termos_plano) * 100,
+    rank = row_number()
+  ) %>%
+  ungroup()
+
+tabela_process_tracing <- freq_por_plano %>%
+  filter(rank <= 25) %>%
+  select(plano, rank, termo, frequencia_absoluta, proporcao_pct) %>%
+  mutate(proporcao_pct = round(proporcao_pct, 3))
+
+write_csv(tabela_process_tracing, file.path(dir_tabelas, "tabela_top_termos_process_tracing.csv"))
+
+# -----------------------------------------------------------------------------
+# 1B. GRÁFICOS DOS TOP TERMOS (INDIVIDUAIS E AGREGADO)
+# -----------------------------------------------------------------------------
+message("--> Gerando visualizações gráficas dos Top Termos por Plano Quinquenal...")
+top_15_por_plano <- tabela_process_tracing %>%
+  filter(rank <= 15)
+
+list_planos <- unique(top_15_por_plano$plano)
+
+for (p in list_planos) {
+  df_sub <- top_15_por_plano %>% filter(plano == p)
+  
+  fig_indiv <- ggplot(df_sub, aes(x = reorder(termo, proporcao_pct), y = proporcao_pct)) +
+    geom_col(fill = "#1F4E79", alpha = 0.85, width = 0.7) +
+    geom_text(aes(label = sprintf("%.2f%%", proporcao_pct)), hjust = -0.15, size = 3, fontface = "bold") +
+    coord_flip() +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.18)), labels = function(x) paste0(x, "%")) +
+    labs(
+      title = paste("Top 15 Termos Mais Frequentes -", p),
+      subtitle = "Proporção percentual das palavras-chave em relação ao total do plano",
+      x = "Termo / Vocábulo",
+      y = "Proporção no Corpus do Plano (%)"
+    ) +
+    tema_academico()
+  
+  ggsave(file.path(dir_figuras, paste0("figura_top_termos_", p, ".png")), plot = fig_indiv, width = 8, height = 5.5, dpi = 300)
+  ggsave(file.path(dir_figuras, paste0("figura_top_termos_", p, ".pdf")), plot = fig_indiv, width = 8, height = 5.5)
+}
+
+fig_agregada <- ggplot(top_15_por_plano, aes(x = reorder_within(termo, proporcao_pct, plano), y = proporcao_pct, fill = plano)) +
+  geom_col(show.legend = FALSE, alpha = 0.9, width = 0.7) +
+  geom_text(aes(label = sprintf("%.2f%%", proporcao_pct)), hjust = -0.1, size = 2.5, fontface = "bold") +
+  coord_flip() +
+  scale_x_reordered() +
+  facet_wrap(~ plano, scales = "free_y", ncol = 3) +
+  scale_fill_brewer(palette = "Set1") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.22)), labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Comparativo dos Top 15 Termos Mais Frequentes nos Ciclos Estratégicos",
+    subtitle = "Análise lexicográfica da densidade relativa por Plano Quinquenal (13º ao 15º PQ)",
+    x = "Termo / Vocábulo",
+    y = "Proporção de Ocorrência no Corpus (%)"
+  ) +
+  tema_academico() +
+  theme(axis.text.y = element_text(size = 8))
+
+ggsave(file.path(dir_figuras, "figura_top_termos_agregado.png"), plot = fig_agregada, width = 11.5, height = 6.5, dpi = 300)
+ggsave(file.path(dir_figuras, "figura_top_termos_agregado.pdf"), plot = fig_agregada, width = 11.5, height = 6.5)
+
+# -----------------------------------------------------------------------------
+# 1C. RANKING DAS TOP 10 MWEs DOUTRINÁRIAS (POR PLANO E GERAL)
+# -----------------------------------------------------------------------------
+message("--> Extraindo e gerando visualizações do Ranking das Top 10 MWEs Doutrinárias...")
+
+freq_mwes <- freq_por_plano %>%
+  filter(str_detect(termo, "_")) %>%
+  mutate(termo_formatado = str_replace_all(termo, "_", " "))
+
+top10_mwes_por_plano <- freq_mwes %>%
+  group_by(plano) %>%
+  slice_max(order_by = frequencia_absoluta, n = 10, with_ties = FALSE) %>%
+  mutate(rank_mwe = row_number()) %>%
+  ungroup()
+
+top10_mwes_geral <- textstat_frequency(dfm_raw) %>%
+  as_tibble() %>%
+  rename(termo = feature, frequencia_absoluta = frequency) %>%
+  filter(str_detect(termo, "_")) %>%
+  mutate(termo_formatado = str_replace_all(termo, "_", " ")) %>%
+  slice_head(n = 10) %>%
+  mutate(rank = row_number())
+
+write_csv(top10_mwes_por_plano, file.path(dir_tabelas, "tabela_top10_mwes_por_plano.csv"))
+write_csv(top10_mwes_geral, file.path(dir_tabelas, "tabela_top10_mwes_geral.csv"))
+
+fig_top10_mwes <- ggplot(top10_mwes_por_plano, aes(x = reorder_within(termo_formatado, frequencia_absoluta, plano), y = frequencia_absoluta, fill = plano)) +
+  geom_col(show.legend = FALSE, alpha = 0.9, width = 0.7) +
+  geom_text(aes(label = frequencia_absoluta), hjust = -0.15, size = 2.8, fontface = "bold") +
+  coord_flip() +
+  scale_x_reordered() +
+  facet_wrap(~ plano, scales = "free_y", ncol = 3) +
+  scale_fill_brewer(palette = "Set1") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.22))) +
+  labs(
+    title = "Ranking das Top 10 MWEs Doutrinárias por Plano Quinquenal",
+    subtitle = "Frequência absoluta das expressões multipalavras (MWEs) conceituais mais utilizadas",
+    x = "Expressão Doutrinária (MWE)",
+    y = "Frequência Absoluta"
+  ) +
+  tema_academico() +
+  theme(axis.text.y = element_text(size = 8))
+
+ggsave(file.path(dir_figuras, "figura_top10_mwes_doutrinarias.png"), plot = fig_top10_mwes, width = 12, height = 6.5, dpi = 300)
+ggsave(file.path(dir_figuras, "figura_top10_mwes_doutrinarias.pdf"), plot = fig_top10_mwes, width = 12, height = 6.5)
+
+# -----------------------------------------------------------------------------
+# 2. NUVEM DE PALAVRAS COMPARATIVA
+# -----------------------------------------------------------------------------
+message("--> Gerando Nuvem de Palavras Comparativa...")
+dfm_agrupada_pq <- dfm_group(dfm_raw, groups = vetor_planos)
+
+png(file.path(dir_figuras, "nuvem_palavras_comparativa.png"), width = 3000, height = 2200, res = 300)
+textplot_wordcloud(
+  dfm_agrupada_pq,
+  comparison = TRUE,
+  max_words = 80,
+  color = c("#1B9E77", "#D95F02", "#7570B3"),
+  min_size = 0.6,
+  max_size = 2.8,
+  labelsize = 0.9
+)
+dev.off()
+
+df_long <- df_resumo %>%
+  pivot_longer(
+    cols = c(
+      Modernizacao_e_Inovacao_Tecnologica,
+      Concepcao_Holistica_de_Seguranca_Nacional,
+      Lideranca_Estrategica_e_Capacidade,
+      Governanca_Global_e_Integracao,
+      Civilizacao_Ecologica_e_Sustentabilidade,
+      Fins_Estruturais_e_Objetivos_Nacionais
+    ),
+    names_to = "Dimensao_Raw",
+    values_to = "Percentual"
+  ) %>%
+  mutate(
+    Dimensao = case_when(
+      Dimensao_Raw == "Modernizacao_e_Inovacao_Tecnologica"       ~ "Modernização & Inovação",
+      Dimensao_Raw == "Concepcao_Holistica_de_Seguranca_Nacional" ~ "Segurança Holística",
+      Dimensao_Raw == "Lideranca_Estrategica_e_Capacidade"        ~ "Liderança Estratégica",
+      Dimensao_Raw == "Governanca_Global_e_Integracao"            ~ "Governança Global",
+      Dimensao_Raw == "Civilizacao_Ecologica_e_Sustentabilidade" ~ "Civilização Ecológica",
+      Dimensao_Raw == "Fins_Estruturais_e_Objetivos_Nacionais"   ~ "Fins Estruturais"
+    )
+  )
+
+# -----------------------------------------------------------------------------
+# 3. FIGURA 1: BARRAS AGRUPADAS (DENSIDADE REAIS NO CORPUS)
+# -----------------------------------------------------------------------------
+figura1 <- ggplot(df_long, aes(x = plano, y = Percentual, fill = Dimensao)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.75, alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.2f%%", Percentual)), position = position_dodge(width = 0.75), vjust = -0.4, size = 2.6, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18)), labels = function(x) paste0(x, "%")) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Evolução da Atenção Discursiva por Dimensão Estratégica",
+    subtitle = "Densidade percentual das categorias em relação ao total de palavras de cada Plano Quinquenal",
+    x = "Ciclo Estratégico (Plano Quinquenal)",
+    y = "Densidade Discursiva no Texto (%)",
+    fill = "Dimensão Teórica:"
+  ) +
+  tema_academico() +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+ggsave(file.path(dir_figuras, "figura1_evolucao_dimensoes_barras.png"), plot = figura1, width = 10, height = 6, dpi = 300)
+ggsave(file.path(dir_figuras, "figura1_evolucao_dimensoes_barras.pdf"), plot = figura1, width = 10, height = 6)
+
+# -----------------------------------------------------------------------------
+# 4. FIGURA 2: LINHAS FACETADAS DE TENDÊNCIA INDIVIDUAL
+# -----------------------------------------------------------------------------
+figura2 <- ggplot(df_long, aes(x = plano, y = Percentual, group = Dimensao, color = Dimensao)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 3) +
+  geom_text_repel(aes(label = sprintf("%.2f%%", Percentual)), size = 3, fontface = "bold", vjust = -0.5) +
+  facet_wrap(~ Dimensao, scales = "free_y", ncol = 3) +
+  scale_color_brewer(palette = "Dark2") +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Trajetória Longitudinal das Categorias Teóricas",
+    subtitle = "Variação individual da densidade textual por ciclo estratégico",
+    x = "Plano Quinquenal",
+    y = "Densidade (%)"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    legend.position = "none",
+    strip.background = element_rect(fill = "#EFEFEF"),
+    strip.text = element_text(face = "bold", size = 8.5)
+  )
+
+ggsave(file.path(dir_figuras, "figura2_linhas_tendencia_facetadas.png"), plot = figura2, width = 10, height = 6, dpi = 300)
+ggsave(file.path(dir_figuras, "figura2_linhas_tendencia_facetadas.pdf"), plot = figura2, width = 10, height = 6)
+
+# -----------------------------------------------------------------------------
+# 5. FIGURA 3: MATRIZ DIALÉTICA (DESENVOLVIMENTO VS. SEGURANÇA)
+# -----------------------------------------------------------------------------
+df_dialetica <- df_resumo %>%
+  select(plano, Modernizacao_e_Inovacao_Tecnologica, Concepcao_Holistica_de_Seguranca_Nacional) %>%
+  rename(Desenvolvimento = Modernizacao_e_Inovacao_Tecnologica, Seguranca = Concepcao_Holistica_de_Seguranca_Nacional)
+
+figura3 <- ggplot(df_dialetica, aes(x = Desenvolvimento, y = Seguranca, label = plano)) +
+  geom_path(color = "#444444", linetype = "dashed", linewidth = 0.8, arrow = arrow(length = unit(0.3, "cm"))) +
+  geom_point(color = "#B22222", size = 5) +
+  geom_text_repel(fontface = "bold", size = 4, box.padding = 0.6) +
+  scale_x_continuous(labels = function(x) paste0(x, "%")) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Matriz Dialética: Desenvolvimento vs. Segurança Holística",
+    subtitle = "Trajetória de coexistência e co-evolução dos dois eixos estruturantes do Partido-Estado",
+    x = "Densidade de Modernização & Inovação (%)",
+    y = "Densidade de Segurança Holística (%)"
+  ) +
+  tema_academico()
+
+ggsave(file.path(dir_figuras, "figura3_dialetica_desenvolvimento_seguranca.png"), plot = figura3, width = 8, height = 5.5, dpi = 300)
+ggsave(file.path(dir_figuras, "figura3_dialetica_desenvolvimento_seguranca.pdf"), plot = figura3, width = 8, height = 5.5)
+
+# -----------------------------------------------------------------------------
+# 6. FIGURA 4: TRAJETÓRIA COM MARCOS ESTATAIS
+# -----------------------------------------------------------------------------
+df_trajetoria_marcos <- df_resumo %>%
+  mutate(
+    Ano_Inicio = case_when(plano == "PQ13" ~ 2016, plano == "PQ14" ~ 2021, plano == "PQ15" ~ 2026),
+    Indice_Convergencia = Modernizacao_e_Inovacao_Tecnologica + Concepcao_Holistica_de_Seguranca_Nacional,
+    Rotulo_Caixa = case_when(
+      plano == "PQ13" ~ "13º PQ (2016)\nMade in China 2025 &\nSegurança Holística Inicial",
+      plano == "PQ14" ~ "14º PQ (2021)\nCirculação Dual &\nAutonomia Tecnológica",
+      plano == "PQ15" ~ "15º PQ (2026)\nNovas Forças Produtivas &\nResiliência Sistêmica"
+    )
+  )
+
+p_marcos <- ggplot(df_trajetoria_marcos, aes(x = Ano_Inicio, y = Indice_Convergencia)) +
+  geom_line(color = "#1F4E79", linewidth = 1.3) +
+  geom_vline(aes(xintercept = Ano_Inicio), linetype = "dotted", color = "#666666", linewidth = 0.8) +
+  geom_point(color = "#C00000", size = 4.5) +
+  geom_label_repel(
+    aes(label = Rotulo_Caixa),
+    size = 3.2, fontface = "bold", fill = "white", color = "#111111",
+    box.padding = 0.8, point.padding = 0.5
+  ) +
+  scale_x_continuous(
+    breaks = c(2016, 2021, 2026),
+    labels = c("2016\n(13º PQ)", "2021\n(14º PQ)", "2026\n(15º PQ)"),
+    limits = c(2014, 2028)
+  ) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  labs(
+    title = "Trajetória da Racionalidade Estratégica e Planos Estatais",
+    subtitle = "Evolução do Índice Agregado Tecno-Securitário (Inovação + Segurança)",
+    x = "Ano de Lançamento do Ciclo Estratégico",
+    y = "Densidade Tecno-Securitária Agregada (%)",
+    caption = "Nota: Soma das frequências relativas das categorias 'Modernização & Inovação' e 'Segurança Holística'."
+  ) +
+  tema_academico()
+
+ggsave(file.path(dir_figuras, "figura4_trajetoria_marcos_planos.png"), plot = p_marcos, width = 10, height = 6, dpi = 300)
+ggsave(file.path(dir_figuras, "figura4_trajetoria_marcos_planos.pdf"), plot = p_marcos, width = 10, height = 6)
+
+# -----------------------------------------------------------------------------
+# 7. FIGURA 5: HEATMAP DE DENSIDADE CONCEITUAL
+# -----------------------------------------------------------------------------
+p_heatmap <- ggplot(df_long, aes(x = factor(plano), y = Dimensao, fill = Percentual)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = sprintf("%.2f%%", Percentual)), color = "black", fontface = "bold", size = 3.8) +
+  scale_fill_viridis_c(option = "viridis", direction = -1, name = "Densidade (%)") +
+  labs(
+    title = "Matriz de Intensidade Discursiva por Plano Quinquenal",
+    subtitle = "Mapeamento em grade de calor do peso relativo das dimensões estratégicas",
+    x = "Plano Quinquenal",
+    y = "Dimensão Estratégica"
+  ) +
+  tema_academico() +
+  theme(panel.grid = element_blank())
+
+ggsave(file.path(dir_figuras, "figura5_heatmap_intensidade.png"), plot = p_heatmap, width = 9, height = 6, dpi = 300)
+
+# -----------------------------------------------------------------------------
+# 8. FIGURA 6: ANÁLISE DE KEYNESS LEXICAL (13º PQ vs. 15º PQ)
+# -----------------------------------------------------------------------------
+if ("PQ13" %in% docnames(dfm_agrupada_pq) && "PQ15" %in% docnames(dfm_agrupada_pq)) {
+  dfm_sub <- dfm_subset(dfm_agrupada_pq, docnames(dfm_agrupada_pq) %in% c("PQ13", "PQ15"))
+  keyness_obj <- textstat_keyness(dfm_sub, target = "PQ15")
+  
+  figura6 <- textplot_keyness(keyness_obj, n = 15, color = c("#0073C2FF", "#EFC000FF")) +
+    labs(
+      title = "Assinatura Lexical Diferencial: 15º PQ em Comparação ao 13º PQ",
+      subtitle = "Termos estatisticamente mais sobressalentes no 15º PQ (Estatística G² de Keyness)"
+    ) +
+    tema_academico()
+  
+  ggsave(file.path(dir_figuras, "figura6_keyness_diferencial_pq15_vs_pq13.png"), plot = figura6, width = 10, height = 6, dpi = 300)
+}
+
+# -----------------------------------------------------------------------------
+# 9. FIGURA 7: REDE DE CO-OCORRÊNCIA DE TERMOS (FCM)
+# -----------------------------------------------------------------------------
+if (!is.null(toks_clean)) {
+  termos_chave_fcm <- c(
+    "innovation", "technology", "security", "data", "ai", "resilience",
+    "supply_chain", "autonomy", "national_security", "high-quality_development",
+    "modernization", "governance", "sovereignty"
+  )
+  
+  toks_fcm <- tokens_keep(toks_clean, pattern = phrase(termos_chave_fcm), window = 5)
+  if (sum(ntoken(toks_fcm)) > 0) {
+    fcm_matrix <- fcm(toks_fcm, context = "window", window = 5, count = "frequency")
+    top_fcm <- fcm_select(fcm_matrix, pattern = termos_chave_fcm)
+    
+    png(file.path(dir_figuras, "figura7_rede_coocorrencia_tecno_seguranca.png"), width = 2600, height = 2000, res = 300)
+    textplot_network(
+      top_fcm,
+      min_freq = 0.5,
+      edge_color = "#1F4E79",
+      edge_alpha = 0.6,
+      edge_size = 2,
+      vertex_color = "#C00000",
+      vertex_labelsize = 4
+    )
+    dev.off()
+  }
+}
+
+# -----------------------------------------------------------------------------
+# 10. FIGURA 8: COMPOSIÇÃO RELATIVA DAS PRIORIDADES (100% STACKED BAR)
+# -----------------------------------------------------------------------------
+df_comp_long <- df_comp %>%
+  pivot_longer(
+    cols = c(
+      Modernizacao_e_Inovacao_Tecnologica,
+      Concepcao_Holistica_de_Seguranca_Nacional,
+      Lideranca_Estrategica_e_Capacidade,
+      Governanca_Global_e_Integracao,
+      Civilizacao_Ecologica_e_Sustentabilidade,
+      Fins_Estruturais_e_Objetivos_Nacionais
+    ),
+    names_to = "Dimensao_Raw",
+    values_to = "Proporcao_Relativa"
+  ) %>%
+  mutate(
+    Dimensao = case_when(
+      Dimensao_Raw == "Modernizacao_e_Inovacao_Tecnologica"       ~ "Modernização & Inovação",
+      Dimensao_Raw == "Concepcao_Holistica_de_Seguranca_Nacional" ~ "Segurança Holística",
+      Dimensao_Raw == "Lideranca_Estrategica_e_Capacidade"        ~ "Liderança Estratégica",
+      Dimensao_Raw == "Governanca_Global_e_Integracao"            ~ "Governança Global",
+      Dimensao_Raw == "Civilizacao_Ecologica_e_Sustentabilidade" ~ "Civilização Ecológica",
+      Dimensao_Raw == "Fins_Estruturais_e_Objetivos_Nacionais"   ~ "Fins Estruturais"
+    )
+  )
+
+figura8 <- ggplot(df_comp_long, aes(x = plano, y = Proporcao_Relativa, fill = Dimensao)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.7, alpha = 0.95) +
+  geom_text(aes(label = sprintf("%.1f%%", Proporcao_Relativa)), position = position_fill(vjust = 0.5), size = 2.8, color = "white", fontface = "bold") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    title = "Redistribuição do 'Orçamento de Atenção' do Partido-Estado",
+    subtitle = "Participação proporcional de cada dimensão no total de menções do dicionário estratégico",
+    x = "Plano Quinquenal",
+    y = "Participação Proporcional Relativa (%)",
+    fill = "Dimensão Teórica:"
+  ) +
+  tema_academico() +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+ggsave(file.path(dir_figuras, "figura8_composicao_relativa_prioridades.png"), plot = figura8, width = 10, height = 6.5, dpi = 300)
+ggsave(file.path(dir_figuras, "figura8_composicao_relativa_prioridades.pdf"), plot = figura8, width = 10, height = 6.5)
+
+message("\n=================================================================")
+message("  SCRIPT 03 UNIFICADO, COMPLETO E EXECUTADO COM SUCESSO!        ")
+message("=================================================================")
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 04_kwic_e_candidatos_cpo.R
+# FUNÇÃO: Extração Contextual KWIC (Keywords in Context) para Process Tracing (CPOs)
+# =============================================================================
+
+if (file.exists("00_setup_e_diretorios.R")) {
+  source("00_setup_e_diretorios.R")
+} else if (file.exists("02_scripts/00_setup_e_diretorios.R")) {
+  source("02_scripts/00_setup_e_diretorios.R")
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(quanteda)
+})
+
+message("--> [SCRIPT 04] Iniciando Extração Contextual KWIC para Process Tracing...")
+
+caminho_corpus <- "01_data/04_processed_corpus/corpus_pq_estruturado.rds"
+caminho_dict   <- "01_data/04_processed_corpus/dicionario_racionalidade.rds"
+
+if (!file.exists(caminho_corpus) || !file.exists(caminho_dict)) {
+  stop("[ERRO CRÍTICO]: Corpus ou Dicionário não localizados em '01_data/04_processed_corpus/'.")
+}
+
+corpus_pq <- readRDS(caminho_corpus)
+dicionario_racionalidade <- readRDS(caminho_dict)
+
+# Tokenização preservando estrutura para busca KWIC
+toks_kwic <- tokens(
+  corpus_pq,
+  remove_punct = FALSE,
+  remove_symbols = FALSE,
+  remove_numbers = FALSE
+)
+
+# Unifica termos do dicionário para amostragem KWIC
+termos_chave_busca <- unlist(dicionario_racionalidade, use.names = FALSE) %>%
+  str_replace_all("_", " ") %>%
+  unique()
+
+message("--> Extraindo janelas de contexto (KWIC) com janela de 20 palavras...")
+
+kwic_resultado <- kwic(
+  toks_kwic,
+  pattern = phrase(termos_chave_busca),
+  window = 20,
+  case_insensitive = TRUE
+) %>%
+  as_tibble()
+
+# Reorganização e vínculo com metadados do Corpus
+df_metadados <- docvars(corpus_pq) %>%
+  as_tibble() %>%
+  mutate(doc_id = docnames(corpus_pq))
+
+kwic_processado <- kwic_resultado %>%
+  rename(
+    doc_id = docname,
+    contexto_anterior = pre,
+    termo_busca = keyword,
+    contexto_posterior = post
+  ) %>%
+  left_join(df_metadados, by = "doc_id") %>%
+  select(doc_id, plano, periodo, capitulo_nome, pagina_inicio, pagina_fim, contexto_anterior, termo_busca, contexto_posterior)
+
+dir.create("04_apendice", showWarnings = FALSE, recursive = TRUE)
+write_csv(kwic_processado, "04_apendice/kwic_candidatos_cpo.csv")
+
+message(sprintf("--> [SCRIPT 04] SUCESSO: %d ocorrências contextuais de CPOs exportadas para '04_apendice/kwic_candidatos_cpo.csv'!", nrow(kwic_processado)))
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT: 05_matriz_cpo_exportacao.R
+# FUNÇÃO: Consolidação da Matriz de CPOs, Tabelas de Síntese e Visualizações
+# =============================================================================
+
+if (file.exists("00_setup_e_diretorios.R")) {
+  source("00_setup_e_diretorios.R")
+} else if (file.exists("02_scripts/00_setup_e_diretorios.R")) {
+  source("02_scripts/00_setup_e_diretorios.R")
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(scales)
+  library(ggrepel)
+})
+
+message("--> [SCRIPT 05] Consolidação da Matriz de CPOs e Relatórios de Process Tracing...")
+
+dir_figuras   <- "03_outputs/graficos"
+dir_relatorios <- "03_outputs/relatorios"
+dir_apendice   <- "04_apendice"
+
+purrr::walk(c(dir_figuras, dir_relatorios, dir_apendice), function(d) {
+  if (!dir.exists(d)) dir.create(d, recursive = TRUE, showWarnings = FALSE)
+})
+
+caminho_kwic        <- file.path(dir_apendice, "kwic_candidatos_cpo.csv")
+caminho_corpus      <- "01_data/04_processed_corpus/corpus_pq_estruturado.rds"
+caminho_resumo_dict <- "01_data/03_clean_csv/dicionario_resumo_por_plano.csv"
+
+if (!file.exists(caminho_kwic)) {
+  stop("[ERRO]: O arquivo 'kwic_candidatos_cpo.csv' não foi localizado em '04_apendice/'. Execute o Script 04 primeiro.")
+}
+
+kwic_cpos   <- read_csv(caminho_kwic, show_col_types = FALSE)
+corpus_pq   <- if (file.exists(caminho_corpus)) readRDS(caminho_corpus) else NULL
+resumo_dict <- if (file.exists(caminho_resumo_dict)) read_csv(caminho_resumo_dict, show_col_types = FALSE) else NULL
+
+if (!"periodo" %in% names(kwic_cpos)) {
+  kwic_cpos <- kwic_cpos %>%
+    mutate(periodo = case_when(
+      str_detect(plano, "PQ13") ~ "2016-2020",
+      str_detect(plano, "PQ14") ~ "2021-2025",
+      str_detect(plano, "PQ15") ~ "2026-2030",
+      TRUE ~ "Período Não Identificado"
+    ))
+}
+
+if (!"doc_id" %in% names(kwic_cpos)) kwic_cpos$doc_id <- paste0(kwic_cpos$plano, "_Doc")
+if (!"capitulo_nome" %in% names(kwic_cpos)) kwic_cpos$capitulo_nome <- "Seção sem Nome"
+if (!"pagina_inicio" %in% names(kwic_cpos)) kwic_cpos$pagina_inicio <- 1
+if (!"pagina_fim" %in% names(kwic_cpos)) kwic_cpos$pagina_fim <- 1
+
+# Matriz Formal de CPOs
+matriz_cpo <- kwic_cpos %>%
+  mutate(
+    evidencia_texto = paste0(
+      coalesce(contexto_anterior, ""), " [",
+      coalesce(termo_busca, ""), "] ",
+      coalesce(contexto_posterior, "")
+    ),
+    localizacao_precisa = sprintf("%s, %s (pp. %s-%s)", plano, capitulo_nome, as.character(pagina_inicio), as.character(pagina_fim)),
+    mecanismo_hipotetico = case_when(
+      str_detect(termo_busca, "(?i)security|defense|risk|military|sovereign|coordinate_development|cybersecurity|emergency") ~ "M1: Securitização Holística e Gestão de Riscos",
+      str_detect(termo_busca, "(?i)development|technology|science|innovation|digital|quality|productive|research|resilience|tech") ~ "M2: Autonomia Tecno-Relacional e Modernização",
+      str_detect(termo_busca, "(?i)global|belt|road|community|shared_future|gsi|gdi|gci|dual_circulation|multilateral|opening") ~ "M3: Governança Global e Projeção Normativa",
+      str_detect(termo_busca, "(?i)party|leadership|centralized|xi_jinping|rigorous|self_governance") ~ "M4: Liderança Estratégica e Capacidade Central",
+      str_detect(termo_busca, "(?i)ecological|carbon|green|civilization|beautiful_china|redline") ~ "M5: Civilização Ecológica e Transição Verde",
+      TRUE ~ "M6: Teleologia Nacional e Fins Estruturais"
+    )
+  )
+
+write_csv(matriz_cpo, file.path(dir_apendice, "matriz_cpo_process_tracing.csv"))
+
+tabela_sintese_cpo <- matriz_cpo %>%
+  group_by(plano, periodo, mecanismo_hipotetico) %>%
+  summarise(frequencia_cpo = n(), .groups = "drop") %>%
+  group_by(plano) %>%
+  mutate(proporcao_pct = round((frequencia_cpo / sum(frequencia_cpo)) * 100, 2)) %>%
+  ungroup()
+
+write_csv(tabela_sintese_cpo, file.path(dir_apendice, "tabela_sintese_cpo_mecanismos.csv"))
+
+tabela_densidade_capitulos <- matriz_cpo %>%
+  group_by(plano, capitulo_nome, mecanismo_hipotetico) %>%
+  summarise(total_cpos = n(), .groups = "drop") %>%
+  arrange(plano, desc(total_cpos))
+
+write_csv(tabela_densidade_capitulos, file.path(dir_apendice, "tabela_cpo_densidade_capitulos.csv"))
+
+# GERAR RELATÓRIO DE SÍNTESE DO PIPELINE EM TEXTO
+relatorio_txt <- file.path(dir_relatorios, "relatorio_sintese_pipeline.txt")
+sink(relatorio_txt)
+cat("===\n")
+cat(" RELATÓRIO DE SÍNTESE DO PIPELINE DE PESQUISA (PROCESS TRACING)\n")
+cat(sprintf(" Data de Geração: %s\n", Sys.time()))
+cat("===\n\n")
+cat(sprintf("Total de Evidências CPO Mapeadas: %d\n\n", nrow(matriz_cpo)))
+cat("Distribuição de CPOs por Mecanismo Causal:\n")
+print(as.data.frame(tabela_sintese_cpo))
+sink()
+
+# VISUALIZAÇÕES GRÁFICAS DE CPOs
+paleta_mecanismos <- c(
+  "M1: Securitização Holística e Gestão de Riscos"    = "#D95F02",
+  "M2: Autonomia Tecno-Relacional e Modernização"     = "#1B9E77",
+  "M3: Governança Global e Projeção Normativa"        = "#E7298A",
+  "M4: Liderança Estratégica e Capacidade Central"    = "#7570B3",
+  "M5: Civilização Ecológica e Transição Verde"       = "#66A61E",
+  "M6: Teleologia Nacional e Fins Estruturais"         = "#B22222"
+)
+
+tema_cpo <- function() {
+  theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold", size = 12, color = "#1A1A1A"),
+      plot.subtitle = element_text(size = 9.5, color = "#4A4A4A", margin = margin(b = 10)),
+      legend.position = "bottom",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 8.5),
+      axis.title = element_text(face = "bold", size = 9.5),
+      axis.text = element_text(size = 9),
+      panel.grid.major.x = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+}
+
+grafico_cpo_dist <- ggplot(tabela_sintese_cpo, aes(x = plano, y = frequencia_cpo, fill = mecanismo_hipotetico)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.9, width = 0.75) +
+  geom_text(
+    aes(label = sprintf("%d\n(%.1f%%)", frequencia_cpo, proporcao_pct)),
+    position = position_dodge(width = 0.75),
+    vjust = -0.25, size = 2.7, fontface = "bold"
+  ) +
+  scale_fill_manual(values = paleta_mecanismos) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.22))) +
+  labs(
+    title = "Distribuição Temporal das Observações do Processo Causal (CPOs)",
+    subtitle = "Evolução da densidade empírica dos 6 mecanismos estratégicos nos Planos Quinquenais",
+    x = "Plano Quinquenal / Ciclo Estratégico",
+    y = "Frequência Absoluta de CPOs Identificadas"
+  ) +
+  tema_cpo() +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+ggsave(file.path(dir_figuras, "figura4_distribuicao_mecanismos_cpo.png"), plot = grafico_cpo_dist, width = 10.5, height = 6.5, dpi = 300)
+
+grafico_cpo_composicao_relativa <- ggplot(tabela_sintese_cpo, aes(x = plano, y = proporcao_pct, fill = mecanismo_hipotetico)) +
+  geom_bar(stat = "identity", position = "fill", width = 0.7, alpha = 0.95) +
+  geom_text(
+    aes(label = ifelse(proporcao_pct >= 3, sprintf("%.1f%%", proporcao_pct), "")),
+    position = position_fill(vjust = 0.5),
+    size = 2.9, color = "white", fontface = "bold"
+  ) +
+  scale_fill_manual(values = paleta_mecanismos) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(
+    title = "Composição Relativa dos 6 Mecanismos Causais por Plano Quinquenal",
+    subtitle = "Participação proporcional relativa (%) de cada mecanismo causal no total de CPOs",
+    x = "Plano Quinquenal / Ciclo Estratégico",
+    y = "Participação Proporcional Relativa (%)",
+    fill = "Mecanismo Causal:"
+  ) +
+  tema_cpo() +
+  guides(fill = guide_legend(nrow = 2, byrow = TRUE))
+
+ggsave(file.path(dir_figuras, "figura9_composicao_relativa_mecanismos_cpo.png"), plot = grafico_cpo_composicao_relativa, width = 10.5, height = 6.5, dpi = 300)
+ggsave(file.path(dir_figuras, "figura9_composicao_relativa_mecanismos_cpo.pdf"), plot = grafico_cpo_composicao_relativa, width = 10.5, height = 6.5)
+
+message("--> [SCRIPT 05] Processamento concluído. Matriz de CPOs, relatório e gráficos gerados com sucesso.")
+
+# =============================================================================
+# PROJETO: A Evolução da Racionalidade Estratégica do Partido-Estado Chinês
+# SCRIPT MESTRE: run_pipeline.R
+# FUNÇÃO: Execução Integrada, Benchmarking, Auditoria e Validação de Artefatos
+# ARQUITETURA: Execução Sequencial Protegida (Scripts 00 a 05)
+# =============================================================================
+
+options(scipen = 999)
+tempo_inicio_total <- Sys.time()
+
+cat("\n=================================================================\n")
+cat(" 🚀 INICIANDO EXECUÇÃO INTEGRAL DO PIPELINE DE PESQUISA (TaD / PT)\n")
+cat(sprintf(" Data/Hora de Início: %s\n", format(tempo_inicio_total, "%Y-%m-%d %H:%M:%S")))
+cat("=================================================================\n\n")
+
+# Função auxiliar para resolução inteligente do caminho do script
+encontrar_script <- function(nome_arquivo) {
+  caminho_direto <- nome_arquivo
+  caminho_subpasta <- file.path("02_scripts", nome_arquivo)
+  
+  if (file.exists(caminho_direto)) {
+    return(caminho_direto)
+  } else if (file.exists(caminho_subpasta)) {
+    return(caminho_subpasta)
+  } else {
+    return(caminho_direto)
+  }
+}
+
+nomes_scripts <- c(
+  "00"  = "00_setup_e_diretorios.R",
+  "01"  = "01_extracao_e_parsing.R",
+  "01b" = "01b_validacao_corpus.R",
+  "02"  = "02_tokenizacao_dfm_dicionario.R",
+  "03"  = "03_visualizacao_graficos.R",
+  "04"  = "04_kwic_e_candidatos_cpo.R",
+  "05"  = "05_matriz_cpo_exportacao.R"
+)
+
+verificacoes_saida <- list(
+  "00"  = c("01_data/01_raw_pdfs", "03_outputs/graficos", "03_outputs/relatorios", "04_apendice"),
+  "01"  = c("01_data/03_clean_csv/planos_quinquenais_secoes_limpas.csv", "01_data/04_processed_corpus/corpus_pq_estruturado.rds"),
+  "01b" = NULL,
+  "02"  = c("01_data/04_processed_corpus/tokens_limpos.rds", "01_data/03_clean_csv/dicionario_resumo_por_plano.csv"),
+  "03"  = c("03_outputs/graficos/figura1_evolucao_dimensoes_barras.png", "03_outputs/graficos/figura2_linhas_tendencia_facetadas.png"),
+  "04"  = c("04_apendice/kwic_candidatos_cpo.csv"),
+  "05"  = c("04_apendice/matriz_cpo_process_tracing.csv", "03_outputs/relatorios/relatorio_sintese_pipeline.txt")
+)
+
+relatorio_execucao <- data.frame(
+  Passo = character(),
+  Script = character(),
+  Status = character(),
+  Tempo_Seg = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Execução Sequencial Protegida
+for (id in names(nomes_scripts)) {
+  caminho_script <- encontrar_script(nomes_scripts[[id]])
+  
+  cat(sprintf("\n▶ [%s] Executando: %s ...\n", id, caminho_script))
+  
+  if (!file.exists(caminho_script)) {
+    cat(sprintf("❌ ERRO CRÍTICO: Script não localizado em '%s'!\n", caminho_script))
+    relatorio_execucao <- rbind(relatorio_execucao, data.frame(
+      Passo = id, Script = caminho_script, Status = "FALHA (Script Ausente)", Tempo_Seg = 0
+    ))
+    break
+  }
+  
+  tempo_inicio_step <- Sys.time()
+  
+  resultado <- tryCatch({
+    source(caminho_script, local = FALSE, echo = FALSE)
+    "SUCESSO"
+  }, error = function(e) {
+    cat(sprintf("\n❌ ERRO DURANTE A EXECUÇÃO DO SCRIPT [%s]:\n %s\n", id, e$message))
+    return("ERRO")
+  })
+  
+  tempo_fim_step <- Sys.time()
+  duracao_step   <- as.numeric(difftime(tempo_fim_step, tempo_inicio_step, units = "secs"))
+  
+  if (resultado == "SUCESSO") {
+    arquivos_esperados <- verificacoes_saida[[id]]
+    falhas_saida       <- 0
+    
+    if (!is.null(arquivos_esperados)) {
+      for (arq in arquivos_esperados) {
+        if (!file.exists(arq) && !dir.exists(arq)) {
+          cat(sprintf("⚠️ ALERTA: Saída esperada não localizada: %s\n", arq))
+          falhas_saida <- falhas_saida + 1
+        }
+      }
+    }
+    
+    status_final <- if (falhas_saida == 0) "CONCLUÍDO (OK)" else "CONCLUÍDO (Incompleto)"
+    cat(sprintf("✅ [%s] Concluído em %.2f segundos.\n", id, duracao_step))
+    
+    relatorio_execucao <- rbind(relatorio_execucao, data.frame(
+      Passo = id, Script = caminho_script, Status = status_final, Tempo_Seg = round(duracao_step, 2)
+    ))
+  } else {
+    relatorio_execucao <- rbind(relatorio_execucao, data.frame(
+      Passo = id, Script = caminho_script, Status = "FALHA DE EXECUÇÃO", Tempo_Seg = round(duracao_step, 2)
+    ))
+    cat("\n⛔ Execução interrompida devido a falha no passo anterior.\n")
+    break
+  }
+}
+
+tempo_fim_total   <- Sys.time()
+duracao_total_min <- as.numeric(difftime(tempo_fim_total, tempo_inicio_total, units = "mins"))
+
+cat("\n=================================================================\n")
+cat(" 🎉 RESUMO FINAL DA EXECUÇÃO DO PIPELINE INTEGRADO\n")
+cat("=================================================================\n")
+print(relatorio_execucao, row.names = FALSE)
+cat(sprintf("\n Tempo Total de Processamento: %.2f minutos\n", duracao_total_min))
+cat("=================================================================\n\n")
+
+# Gravação do log final de execução
+dir_relatorios <- "03_outputs/relatorios"
+if (!dir.exists(dir_relatorios)) dir.create(dir_relatorios, recursive = TRUE, showWarnings = FALSE)
+write.csv(relatorio_execucao, file.path(dir_relatorios, "log_execucao_pipeline.csv"), row.names = FALSE)
