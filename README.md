@@ -62,14 +62,17 @@ O pipeline analítico do projeto está estruturado em quatro etapas principais:
 
 ```text
 ├── 01_data/
-│   └── 01_raw_docs/                       # Textos brutos dos Planos Quinquenais
+│   └── 01_raw_docs/                          # Processamento de PDF, Parser Hierárquico Universal e Construção do Corpus
+│   └── PQ13_limpo.txt/                       # 13º Plano Quinquenal após limpeza e validação
+│   └── PQ14_limpo.txt/                       # 14º Plano Quinquenal após limpeza e validação
+│   └── PQ15_limpo.txt/                       # 15º Plano Quinquenal após limpeza e validação
 │
 ├── 02_scripts/
 │   ├── 00_setup_e_diretorios.R                       # Configuração de ambiente, pacotes e pastas
 │   ├── 01_extracao_e_parsing.R                        # Leitura e parsing inicial dos documentos brutos
 │   ├── 01b_validacao_corpus.R                         # Testes de integridade e validação do corpus
 │   ├── 02_tokenizacao_dfm_dicionario.R                # Tokenização, matriz DFM e aplicação do dicionário
-│   ├── 03_visualizacao_graficos.R                      # Gerador unificado de gráficos e figuras
+│   ├── 03_visualizacao_graficos.R                      # Visualização Lexicográfica, geração de gráficos e figuras e análise de Keyness
 │   ├── 04_kwic_e_candidatos_cpo.R                      # Análise KWIC e seleção de candidatos a CPOs
 │   ├── 05_matriz_cpo_exportacao.R                      # Construção e exportação das matrizes de CPOs
 │   └── artigo_planos_quinquenais_SCRIPTS_COMPLETOS.R    # Script unificado contendo o pipeline completo
