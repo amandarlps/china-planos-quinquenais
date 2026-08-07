@@ -62,23 +62,23 @@ O pipeline analítico do projeto está estruturado em quatro etapas principais:
 
 ```text
 ├── 01_data/
-│   ├── 01_extracao_e_parsing.R      # Processamento dos PDF's - Planos Quinquenais
-│   ├── 03_clean_csv/                # Tabelas processadas de densidade e proporção
-│   └── 04_processed_corpus/         # Document-Feature Matrix (DFM) e Tokens (.rds)
+│   └── 01_raw_docs/                       # Textos brutos dos Planos Quinquenais
 │
 ├── 02_scripts/
-│   ├── 00_setup_e_diretorios.R      # Carregamento de bibliotecas e criação de pastas
-│   ├── 01_processamento_corpus.R    # Limpeza, tokenização e extração de MWEs
-│   ├── 02_analise_dicionario.R      # Aplicação do dicionário e métricas percentuais
-│   └── 03_visualizacao_graficos.R   # Gerador unificado de figuras e tabelas de saída
+│   ├── 00_setup_e_diretorios.R                       # Configuração de ambiente, pacotes e pastas
+│   ├── 01_extracao_e_parsing.R                        # Leitura e parsing inicial dos documentos brutos
+│   ├── 01b_validacao_corpus.R                         # Testes de integridade e validação do corpus
+│   ├── 02_tokenizacao_dfm_dicionario.R                # Tokenização, matriz DFM e aplicação do dicionário
+│   ├── 03_visualizacao_graficos.R                      # Gerador unificado de gráficos e figuras
+│   ├── 04_kwic_e_candidatos_cpo.R                      # Análise KWIC e seleção de candidatos a CPOs
+│   ├── 05_matriz_cpo_exportacao.R                      # Construção e exportação das matrizes de CPOs
+│   └── artigo_planos_quinquenais_SCRIPTS_COMPLETOS.R    # Script unificado contendo o pipeline completo
 │
 ├── 03_outputs/
 │   ├── graficos/                    # Gráficos exportados (PNG 300 DPI / PDF)
 │   └── tabelas/                     # Tabelas CSV do Process Tracing e MWEs
 │
-└── artigo_planos_quinquenais_SCRIPTS_COMPLETOS.R    # Compilado de todos os scripts
-
-```
+└── README.md                        # Documentação do projeto
 
 ---
 
